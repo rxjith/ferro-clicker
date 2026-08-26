@@ -1,1 +1,12 @@
-/target
+# Rust build artifacts
+/target/
+
+# AppImage build artifacts
+*.AppImage
+
+# OS-specific clutter
+.DS_Store
+Thumbs.db
+
+# Environment / Secret files :P
+*.env

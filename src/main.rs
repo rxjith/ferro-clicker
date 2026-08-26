@@ -35,7 +35,7 @@ impl Hotkey {
         }
     }
 
-    fn ALL() -> &'static [Hotkey] {
+    fn all() -> &'static [Hotkey] {
         &[
             Hotkey::F1, Hotkey::F2, Hotkey::F3, Hotkey::F4, Hotkey::F5, Hotkey::F6,
             Hotkey::F7, Hotkey::F8, Hotkey::F9, Hotkey::F10, Hotkey::F11, Hotkey::F12,
@@ -114,7 +114,7 @@ fn main() -> eframe::Result<()> {
                     // Handle start/stop hotkey
                     EventType::KeyPress(key) => {
                         let current_hk_idx = active_hk.load(Ordering::Relaxed) as usize;
-                        if let Some(target_hk) = Hotkey::ALL().get(current_hk_idx) {
+                        if let Some(target_hk) = Hotkey::all().get(current_hk_idx) {
                             if key == target_hk.to_rdev_key() {
                                 let state = running.load(Ordering::Relaxed);
                                 running.store(!state, Ordering::Relaxed);
@@ -253,12 +253,12 @@ impl eframe::App for AutoClickerApp {
                 ui.label(egui::RichText::new("Toggle Hotkey:").strong());
                 
                 let mut hk_idx = self.active_hotkey.load(Ordering::Relaxed) as usize;
-                let current_hk = Hotkey::ALL()[hk_idx];
+                let current_hk = Hotkey::all()[hk_idx];
 
                 egui::ComboBox::from_id_source("hotkey_select")
                     .selected_text(current_hk.name())
                     .show_ui(ui, |ui| {
-                        for (i, hk) in Hotkey::ALL().iter().enumerate() {
+                        for (i, hk) in Hotkey::all().iter().enumerate() {
                             if ui.selectable_value(&mut hk_idx, i, hk.name()).clicked() {
                                 self.active_hotkey.store(i as u32, Ordering::Relaxed);
                             }
@@ -270,7 +270,7 @@ impl eframe::App for AutoClickerApp {
 
             // --- 4. Controls & Status ---
             let currently_running = self.is_running.load(Ordering::Relaxed);
-            let hk_name = Hotkey::ALL()[self.active_hotkey.load(Ordering::Relaxed) as usize].name();
+            let hk_name = Hotkey::all()[self.active_hotkey.load(Ordering::Relaxed) as usize].name();
 
             let button_color = if currently_running {
                 egui::Color32::from_rgb(180, 40, 40)
