@@ -1,0 +1,8 @@
+[package]
+name = "ferro-clicker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.27"
+rdev = "0.5"
