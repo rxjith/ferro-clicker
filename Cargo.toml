@@ -6,8 +6,10 @@ edition = "2024"
 [dependencies]
 eframe = "0.27"
 enigo = "0.2"
-rdev = "0.5"
+evdev = "0.12"
 
 [package.metadata.appimage]
+name = "FerroClicker"
 assets = ["ferro-clicker.desktop", "icon.png"]
 icon = "icon.png"
+env = { GDK_BACKEND = "x11" }

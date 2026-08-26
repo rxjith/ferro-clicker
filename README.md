@@ -8,28 +8,54 @@ The easiest way to run FerroClicker on Linux is by downloading the pre-built `.A
 
 1. Download `ferro-clicker.AppImage` from the **[Releases](../../releases)** page.
 2. Open your terminal and grant execution permissions:
-   ```bash
    chmod +x ferro-clicker.AppImage
-   ```
 3. Run the application:
-   ```bash
    ./ferro-clicker.AppImage
-   ```
+
+### ⚠️ Common AppImage Issues & Troubleshooting
 
 > [!WARNING]
-> **Global Hotkey Permissions:**
-> Global hotkey permissions require adding your user to the `input` group:
-> ```bash
-> sudo usermod -aG input $USER
-> ```
-> *Restart or log out and back into your session for changes to take effect.*
+> **FUSE Library Missing (Ubuntu 22.04 / 24.04 LTS & Newer)**  
+> Modern Ubuntu releases lack the legacy FUSE 2 runtime required by AppImages by default. If you see `Cannot mount AppImage, please check your FUSE setup`, resolve it using either method:
+> 
+> - **Method A (Zero Install):** Bypass FUSE by setting the extract flag:
+>   APPIMAGE_EXTRACT_AND_RUN=1 ./ferro-clicker.AppImage
+> - **Method B (System-wide Fix):** Install the compatibility layer:
+>   - **Ubuntu 24.04 LTS & newer:** sudo apt update && sudo apt install -y libfuse2t64
+>   - **Ubuntu 22.04 LTS:** sudo apt update && sudo apt install -y libfuse2
+
+> [!WARNING]
+> **Global Hotkey Permissions (`/dev/input`)**  
+> Reading global hotkey toggles across all windows requires adding your user to the `input` group:
+> sudo usermod -aG input $USER  
+> *Note: You must log out and back into your desktop session for group permissions to take effect.*
 
 > [!CAUTION]
-> **Wayland Desktop Sessions:**
-> If you are running a Wayland session (default on modern GNOME/KDE) and global mouse clicks are not registering, launch the AppImage with elevated privileges:
-> ```bash
+> **Wayland Desktop Sessions**  
+> If you are on Wayland (default on modern GNOME/KDE) and global simulated mouse clicks fail to register in certain applications, launch with elevated privileges:
 > sudo ./ferro-clicker.AppImage
-> ```
+
+---
+
+## 🖥️ Creating a Desktop Launcher (`.desktop`)
+
+If your build occurs without automatically configuring a desktop entry, create one manually:
+
+1. Create or open `ferro-clicker.desktop` in your local applications directory:
+   nano ~/.local/share/applications/ferro-clicker.desktop
+
+2. Add the following configuration (replace `/path/to/` with your actual file path):
+   [Desktop Entry]
+   Name=FerroClicker
+   Comment=Automated mouse clicker tool
+   Exec=pkexec /path/to/ferro-clicker/target/appimage/ferro-clicker.AppImage
+   Icon=ferro-clicker
+   Type=Application
+   Terminal=false
+   Categories=Utility;
+
+3. Grant execution permissions to the launcher:
+   chmod +x ~/.local/share/applications/ferro-clicker.desktop
 
 ---
 
@@ -39,78 +65,41 @@ If you prefer compiling the application yourself, follow the instructions for yo
 
 > [!NOTE]
 > Ensure you have Rust installed via `rustup` before proceeding:
-> ```bash
 > curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-> ```
 
 ### 1. Install System Dependencies
 
 **Ubuntu / Debian / Pop!_OS**
-```bash
-sudo apt update
-sudo apt install -y build-essential pkg-config libx11-dev libxtst-dev libxi-dev
-```
+sudo apt update && sudo apt install -y build-essential pkg-config libx11-dev libxtst-dev libxi-dev libfuse2t64
 
 **Fedora / RHEL**
-```bash
-sudo dnf install -y gcc pkg-config libX11-devel libXtst-devel libXi-devel
-```
+sudo dnf install -y gcc pkg-config libX11-devel libXtst-devel libXi-devel fuse
 
 **Arch Linux / Manjaro**
-```bash
-sudo pacman -S --needed base-devel pkgconf libx11 libxtst libxi
-```
+sudo pacman -S --needed base-devel pkgconf libx11 libxtst libxi fuse2
 
 **openSUSE**
-```bash
-sudo zypper install gcc pkg-config libX11-devel libXtst-devel libXi-devel
-```
+sudo zypper install gcc pkg-config libX11-devel libXtst-devel libXi-devel libfuse2
 
 ### 2. Build & Run
 
-```bash
 # Clone the repository
 git clone https://github.com/your-username/ferro-clicker.git
 cd ferro-clicker
 
 # Run in development mode
 cargo run --release
-```
 
 ### 3. Packaging into AppImage
 
-```bash
 # 1. Install cargo-appimage
 cargo install cargo-appimage
 
 # 2. Build the AppImage
 APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage
-```
 
 ---
 
 ## 📄 License
 
 Distributed under the GPL-3.0 License. See `LICENSE` for details.
-
----
-
-> [!WARNING]
-> Sometimes the build occurs without pointing `ferro-clicker.desktop` to `ferro-clicker.AppImage` for execution
-> To fix this, please do the following:
-> 1. Open your `ferro-clicker.desktop` file within the root directory if you have one, or just create one.
-> 2. Ensure that the following is within the file:
-> ```bash
-> [Desktop Entry]
-> Name=FerroClicker
-> Exec=pkexec [replace this with whatever directory ferro-clicker is in]/target/appimage/ferro-clicker.AppImage
-> Icon=ferro-clicker
-> Type=Application
-> Terminal=false
-> Categories=Utility;
-> ```
-> 3. Make the `.desktop` file executable:
-> ```bash
-> chmod +x ~/.local/share/applications/ferro-clicker.desktop
-> ```
-> 4. Try running FerroClicker now!

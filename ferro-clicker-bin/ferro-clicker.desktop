@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=FerroClicker
+Comment=A lightweight Rust Auto Clicker 🦀
+Exec=ferro-clicker
+Icon=icon
+Type=Application
+Categories=Utility;
+Terminal=false
+X-AppImage-Version=0.1.0

@@ -1,6 +1,7 @@
 use eframe::egui;
 use enigo::{Button as EnigoButton, Direction, Enigo, Mouse, Settings};
-use rdev::{listen, Button as RdevButton, Event, EventType, Key};
+use evdev::{Device, Key as EvdevKey};
+use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -18,12 +19,20 @@ pub enum Hotkey {
 }
 
 impl Hotkey {
-    fn to_rdev_key(self) -> Key {
+    fn to_evdev_key(self) -> EvdevKey {
         match self {
-            Hotkey::F1 => Key::F1, Hotkey::F2 => Key::F2, Hotkey::F3 => Key::F3,
-            Hotkey::F4 => Key::F4, Hotkey::F5 => Key::F5, Hotkey::F6 => Key::F6,
-            Hotkey::F7 => Key::F7, Hotkey::F8 => Key::F8, Hotkey::F9 => Key::F9,
-            Hotkey::F10 => Key::F10, Hotkey::F11 => Key::F11, Hotkey::F12 => Key::F12,
+            Hotkey::F1 => EvdevKey::KEY_F1,
+            Hotkey::F2 => EvdevKey::KEY_F2,
+            Hotkey::F3 => EvdevKey::KEY_F3,
+            Hotkey::F4 => EvdevKey::KEY_F4,
+            Hotkey::F5 => EvdevKey::KEY_F5,
+            Hotkey::F6 => EvdevKey::KEY_F6,
+            Hotkey::F7 => EvdevKey::KEY_F7,
+            Hotkey::F8 => EvdevKey::KEY_F8,
+            Hotkey::F9 => EvdevKey::KEY_F9,
+            Hotkey::F10 => EvdevKey::KEY_F10,
+            Hotkey::F11 => EvdevKey::KEY_F11,
+            Hotkey::F12 => EvdevKey::KEY_F12,
         }
     }
 
@@ -44,6 +53,34 @@ impl Hotkey {
     }
 }
 
+/// Helper function to check if the user has permission to read `/dev/input/event*` devices.
+fn check_input_permissions() -> bool {
+    let input_dir = match fs::read_dir("/dev/input") {
+        Ok(dir) => dir,
+        Err(_) => return false,
+    };
+
+    let mut found_event_device = false;
+    let mut can_read_device = false;
+
+    for entry in input_dir.flatten() {
+        let path = entry.path();
+        if path.to_string_lossy().contains("event") {
+            found_event_device = true;
+            if fs::File::open(&path).is_ok() {
+                can_read_device = true;
+                break;
+            }
+        }
+    }
+
+    if !found_event_device {
+        return true; // Assume standard permissions if no event devices are detected.
+    }
+
+    can_read_device
+}
+
 fn main() -> eframe::Result<()> {
     let is_running = Arc::new(AtomicBool::new(false));
     let interval_ms = Arc::new(AtomicU64::new(100));
@@ -53,7 +90,7 @@ fn main() -> eframe::Result<()> {
     let active_hotkey = Arc::new(AtomicU32::new(5)); // Default F6
     let is_picking_location = Arc::new(AtomicBool::new(false));
 
-    // 1. Background Thread: Clicker Execution (Enigo Engine)
+    // 1. Background Thread: Clicker Engine (Enigo)
     {
         let running = Arc::clone(&is_running);
         let interval = Arc::clone(&interval_ms);
@@ -62,7 +99,6 @@ fn main() -> eframe::Result<()> {
         let target_y = Arc::clone(&fixed_y);
 
         thread::spawn(move || {
-            // Instantiate Enigo mouse controller
             let mut enigo = match Enigo::new(&Settings::default()) {
                 Ok(e) => e,
                 Err(err) => {
@@ -79,10 +115,7 @@ fn main() -> eframe::Result<()> {
                         let _ = enigo.move_mouse(x, y, enigo::Coordinate::Abs);
                     }
 
-                    // Perform synthetic click
                     let _ = enigo.button(EnigoButton::Left, Direction::Click);
-
-                    // Clamp minimum delay to 10ms to prevent CPU/Kernel queue starvation
                     let delay = interval.load(Ordering::Relaxed).max(10);
                     thread::sleep(Duration::from_millis(delay));
                 } else {
@@ -92,7 +125,7 @@ fn main() -> eframe::Result<()> {
         });
     }
 
-    // 2. Background Thread: Global Listener (rdev engine)
+    // 2. Background Thread: Low-Level Global Listener (evdev)
     {
         let running = Arc::clone(&is_running);
         let active_hk = Arc::clone(&active_hotkey);
@@ -100,48 +133,81 @@ fn main() -> eframe::Result<()> {
         let target_x = Arc::clone(&fixed_x);
         let target_y = Arc::clone(&fixed_y);
 
-        let last_x = Arc::new(AtomicI32::new(0));
-        let last_y = Arc::new(AtomicI32::new(0));
-
-        let lx = Arc::clone(&last_x);
-        let ly = Arc::clone(&last_y);
-
         thread::spawn(move || {
-            let callback = move |event: Event| {
-                match event.event_type {
-                    EventType::MouseMove { x, y } => {
-                        lx.store(x as i32, Ordering::Relaxed);
-                        ly.store(y as i32, Ordering::Relaxed);
-                    }
-                    EventType::ButtonPress(RdevButton::Left) => {
-                        if picking.load(Ordering::Relaxed) {
-                            target_x.store(lx.load(Ordering::Relaxed), Ordering::Relaxed);
-                            target_y.store(ly.load(Ordering::Relaxed), Ordering::Relaxed);
-                            picking.store(false, Ordering::Relaxed);
-                        }
-                    }
-                    EventType::KeyPress(key) => {
-                        let current_hk_idx = active_hk.load(Ordering::Relaxed) as usize;
-                        if let Some(target_hk) = Hotkey::all().get(current_hk_idx) {
-                            if key == target_hk.to_rdev_key() {
-                                let state = running.load(Ordering::SeqCst);
-                                running.store(!state, Ordering::SeqCst);
+            loop {
+                let mut valid_devices: Vec<Device> = Vec::new();
+
+                if let Ok(entries) = fs::read_dir("/dev/input") {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.to_string_lossy().contains("event") {
+                            if let Ok(device) = Device::open(&path) {
+                                valid_devices.push(device);
                             }
                         }
                     }
-                    _ => {}
                 }
-            };
 
-            if let Err(error) = listen(callback) {
-                eprintln!("[Event Listener Error] {:?}", error);
+                if valid_devices.is_empty() {
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+
+                let mut handles = Vec::new();
+                for mut dev in valid_devices {
+                    let running = Arc::clone(&running);
+                    let active_hk = Arc::clone(&active_hk);
+                    let picking = Arc::clone(&picking);
+                    let target_x = Arc::clone(&target_x);
+                    let target_y = Arc::clone(&target_y);
+
+                    let handle = thread::spawn(move || loop {
+                        match dev.fetch_events() {
+                            Ok(events) => {
+                                for ev in events {
+                                    if ev.event_type() == evdev::EventType::KEY && ev.value() == 1 {
+                                        let current_hk_idx = active_hk.load(Ordering::Relaxed) as usize;
+                                        if let Some(target_hk) = Hotkey::all().get(current_hk_idx) {
+                                            if ev.code() == target_hk.to_evdev_key().code() {
+                                                let state = running.load(Ordering::SeqCst);
+                                                running.store(!state, Ordering::SeqCst);
+                                            }
+                                        }
+
+                                        if picking.load(Ordering::Relaxed) && ev.code() == evdev::Key::BTN_LEFT.code() {
+                                            if let Ok(enigo) = Enigo::new(&Settings::default()) {
+                                                if let Ok((x, y)) = enigo.location() {
+                                                    target_x.store(x, Ordering::Relaxed);
+                                                    target_y.store(y, Ordering::Relaxed);
+                                                }
+                                            }
+                                            picking.store(false, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(_) => break,
+                        }
+                    });
+                    handles.push(handle);
+                }
+
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                thread::sleep(Duration::from_secs(1));
             }
         });
     }
 
+    let initial_permissions = check_input_permissions();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([340.0, 380.0])
+            .with_inner_size([340.0, 420.0])
             .with_resizable(false),
         ..Default::default()
     };
@@ -149,7 +215,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "FerroClicker",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
             Box::new(AutoClickerApp {
@@ -160,6 +226,7 @@ fn main() -> eframe::Result<()> {
                 fixed_y,
                 active_hotkey,
                 is_picking_location,
+                has_input_permissions: initial_permissions,
             })
         }),
     )
@@ -173,6 +240,7 @@ struct AutoClickerApp {
     fixed_y: Arc<AtomicI32>,
     active_hotkey: Arc<AtomicU32>,
     is_picking_location: Arc<AtomicBool>,
+    has_input_permissions: bool,
 }
 
 impl eframe::App for AutoClickerApp {
@@ -183,6 +251,33 @@ impl eframe::App for AutoClickerApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("FerroClicker");
             ui.separator();
+
+            // --- Permission Check Banner ---
+            if !self.has_input_permissions {
+                egui::Frame::group(ui.style())
+                    .fill(egui::Color32::from_rgb(60, 20, 20))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::RED))
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("⚠️ Missing /dev/input permissions!")
+                                    .strong()
+                                    .color(egui::Color32::RED),
+                            );
+                            ui.label(
+                                egui::RichText::new("Global hotkeys won't respond. Run:\nsudo usermod -aG input $USER")
+                                    .small()
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                            ui.add_space(4.0);
+                            if ui.button("🔄 Re-check Permissions").clicked() {
+                                self.has_input_permissions = check_input_permissions();
+                            }
+                        });
+                    });
+                ui.add_space(8.0);
+                ui.separator();
+            }
 
             // --- 1. Timing Settings ---
             ui.add_space(4.0);
