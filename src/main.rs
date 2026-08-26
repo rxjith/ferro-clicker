@@ -50,6 +50,7 @@ fn main() -> eframe::Result<()> {
     let fixed_x = Arc::new(AtomicI32::new(500));
     let fixed_y = Arc::new(AtomicI32::new(500));
     let active_hotkey = Arc::new(AtomicU32::new(5)); // Default F6
+    let is_picking_location = Arc::new(AtomicBool::new(false));
 
     // 1. Background Thread: Click Loop
     {
@@ -78,35 +79,61 @@ fn main() -> eframe::Result<()> {
         });
     }
 
-    // 2. Background Thread: Global Hotkey Listener
+    // 2. Background Thread: Global Listener (Hotkeys & Mouse Picker)
     {
         let running = Arc::clone(&is_running);
         let active_hk = Arc::clone(&active_hotkey);
+        let picking = Arc::clone(&is_picking_location);
+        let target_x = Arc::clone(&fixed_x);
+        let target_y = Arc::clone(&fixed_y);
+
+        // Keep track of cursor position globally
+        let last_x = Arc::new(AtomicI32::new(0));
+        let last_y = Arc::new(AtomicI32::new(0));
+
+        let lx = Arc::clone(&last_x);
+        let ly = Arc::clone(&last_y);
 
         thread::spawn(move || {
             let callback = move |event: Event| {
-                if let EventType::KeyPress(key) = event.event_type {
-                    let current_hk_idx = active_hk.load(Ordering::Relaxed) as usize;
-                    if let Some(target_hk) = Hotkey::ALL().get(current_hk_idx) {
-                        if key == target_hk.to_rdev_key() {
-                            let state = running.load(Ordering::Relaxed);
-                            running.store(!state, Ordering::Relaxed);
-                            println!("[Hotkey] Toggled state to: {}", !state);
+                match event.event_type {
+                    // Update current global mouse coordinates
+                    EventType::MouseMove { x, y } => {
+                        lx.store(x as i32, Ordering::Relaxed);
+                        ly.store(y as i32, Ordering::Relaxed);
+                    }
+                    // Handle mouse click when in location-picking mode
+                    EventType::ButtonPress(Button::Left) => {
+                        if picking.load(Ordering::Relaxed) {
+                            target_x.store(lx.load(Ordering::Relaxed), Ordering::Relaxed);
+                            target_y.store(ly.load(Ordering::Relaxed), Ordering::Relaxed);
+                            picking.store(false, Ordering::Relaxed);
+                            println!("[Picker] Captured coordinates: X={}, Y={}", target_x.load(Ordering::Relaxed), target_y.load(Ordering::Relaxed));
                         }
                     }
+                    // Handle start/stop hotkey
+                    EventType::KeyPress(key) => {
+                        let current_hk_idx = active_hk.load(Ordering::Relaxed) as usize;
+                        if let Some(target_hk) = Hotkey::ALL().get(current_hk_idx) {
+                            if key == target_hk.to_rdev_key() {
+                                let state = running.load(Ordering::Relaxed);
+                                running.store(!state, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             };
 
             if let Err(error) = listen(callback) {
-                eprintln!("[Hotkey Error] Failed to listen to global inputs: {:?}", error);
-                eprintln!("[Hotkey Error] Ensure your user is in the 'input' group: sudo usermod -aG input $USER");
+                eprintln!("[Event Listener Error] {:?}", error);
             }
         });
     }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([340.0, 320.0])
+            .with_inner_size([340.0, 360.0])
             .with_resizable(false),
         ..Default::default()
     };
@@ -115,7 +142,6 @@ fn main() -> eframe::Result<()> {
         "FerroClicker",
         options,
         Box::new(|cc| {
-            // Explicitly force dark theme across all platforms
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
             Box::new(AutoClickerApp {
@@ -125,6 +151,7 @@ fn main() -> eframe::Result<()> {
                 fixed_x,
                 fixed_y,
                 active_hotkey,
+                is_picking_location,
             })
         }),
     )
@@ -137,17 +164,19 @@ struct AutoClickerApp {
     fixed_x: Arc<AtomicI32>,
     fixed_y: Arc<AtomicI32>,
     active_hotkey: Arc<AtomicU32>,
+    is_picking_location: Arc<AtomicBool>,
 }
 
 impl eframe::App for AutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_pixels_per_point(1.1);
+        ctx.request_repaint_after(Duration::from_millis(50));
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("FerroClicker");
             ui.separator();
 
-            // Timing Settings
+            // --- 1. Timing Settings ---
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Timing").strong());
             let mut delay = self.interval_ms.load(Ordering::Relaxed);
@@ -161,7 +190,7 @@ impl eframe::App for AutoClickerApp {
             ui.add_space(8.0);
             ui.separator();
 
-            // Location Settings
+            // --- 2. Location Settings ---
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Click Location").strong());
             
@@ -191,6 +220,26 @@ impl eframe::App for AutoClickerApp {
                             self.fixed_y.store(y, Ordering::Relaxed);
                         }
                     });
+
+                    ui.add_space(4.0);
+
+                    // Mouse Picker Toggle
+                    let picking = self.is_picking_location.load(Ordering::Relaxed);
+                    let picker_btn_text = if picking {
+                        "Click anywhere to capture..."
+                    } else {
+                        "📍 Pick Location with Mouse"
+                    };
+
+                    let btn = egui::Button::new(
+                        egui::RichText::new(picker_btn_text)
+                            .small()
+                            .color(if picking { egui::Color32::YELLOW } else { egui::Color32::WHITE }),
+                    );
+
+                    if ui.add(btn).clicked() {
+                        self.is_picking_location.store(!picking, Ordering::Relaxed);
+                    }
                 });
             }
             self.mode.store(selected_mode as u32, Ordering::Relaxed);
@@ -198,7 +247,7 @@ impl eframe::App for AutoClickerApp {
             ui.add_space(8.0);
             ui.separator();
 
-            // Hotkey Configuration
+            // --- 3. Hotkey Configuration ---
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Toggle Hotkey:").strong());
@@ -219,7 +268,7 @@ impl eframe::App for AutoClickerApp {
 
             ui.add_space(12.0);
 
-            // Controls & Status
+            // --- 4. Controls & Status ---
             let currently_running = self.is_running.load(Ordering::Relaxed);
             let hk_name = Hotkey::ALL()[self.active_hotkey.load(Ordering::Relaxed) as usize].name();
 
