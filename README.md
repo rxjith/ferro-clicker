@@ -91,4 +91,4 @@ APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage
 
 ## 📄 License
 
-Distributed under the MIT License. See `LICENSE` for details.
+Distributed under the GPL-3.0 License. See `LICENSE` for details.
