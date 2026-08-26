@@ -93,6 +93,7 @@ APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage
 
 Distributed under the GPL-3.0 License. See `LICENSE` for details.
 
+---
 
 > [!WARNING]
 > Sometimes the build occurs without pointing `ferro-clicker.desktop` to `ferro-clicker.AppImage` for execution
