@@ -4,6 +4,17 @@ A lightweight, fast auto-clicker built with Rust.
 
 FerroClicker provides a simple GUI for automating mouse clicks without unnecessary complexity.
 
+## ✨ Features
+
+* 🖱️ Automated mouse clicking
+* ⌨️ Global hotkey support
+* ⚡ Lightweight and fast
+* 🦀 Built with Rust
+* 📦 Portable AppImage
+* 🐧 Linux support
+* 🔓 Open source
+
+
 > ⚠️ **Linux input automation has important limitations on modern Wayland desktops.**
 > See the [Wayland compatibility](#-wayland-compatibility) section before reporting input-related issues.
 
