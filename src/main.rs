@@ -181,7 +181,7 @@ impl eframe::App for AutoClickerApp {
         ctx.request_repaint_after(Duration::from_millis(50));
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("FerroClicker 🦀");
+            ui.heading("FerroClicker");
             ui.separator();
 
             // --- 1. Timing Settings ---
