@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.27"
+enigo = "0.2"
 rdev = "0.5"
 
 [package.metadata.appimage]
