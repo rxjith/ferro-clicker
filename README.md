@@ -92,3 +92,24 @@ APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage
 ## 📄 License
 
 Distributed under the GPL-3.0 License. See `LICENSE` for details.
+
+
+> [!WARNING]
+> Sometimes the build occurs without pointing `ferro-clicker.desktop` to `ferro-clicker.AppImage` for execution
+> To fix this, please do the following:
+> 1. Open your `ferro-clicker.desktop` file within the root directory if you have one, or just create one.
+> 2. Ensure that the following is within the file:
+> ```bash
+> [Desktop Entry]
+> Name=FerroClicker
+> Exec=pkexec [replace this with whatever directory ferro-clicker is in]/target/appimage/ferro-clicker.AppImage
+> Icon=ferro-clicker
+> Type=Application
+> Terminal=false
+> Categories=Utility;
+> ```
+> 3. Make the `.desktop` file executable:
+> ```bash
+> chmod +x ~/.local/share/applications/ferro-clicker.desktop
+> ```
+> 4. Try running FerroClicker now!
