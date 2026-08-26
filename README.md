@@ -31,7 +31,7 @@ chmod +x ferro-clicker.AppImage
 
 ---
 
-# AppImage Troubleshooting ‼️
+# ‼️ AppImage Troubleshooting 
 
 ### FUSE errors
 
