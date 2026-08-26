@@ -44,13 +44,12 @@ impl Hotkey {
 }
 
 fn main() -> eframe::Result<()> {
-    // Shared Atomic State
     let is_running = Arc::new(AtomicBool::new(false));
     let interval_ms = Arc::new(AtomicU64::new(100));
-    let mode = Arc::new(AtomicU32::new(0)); // 0: Current, 1: Fixed
+    let mode = Arc::new(AtomicU32::new(0)); 
     let fixed_x = Arc::new(AtomicI32::new(500));
     let fixed_y = Arc::new(AtomicI32::new(500));
-    let active_hotkey = Arc::new(AtomicU32::new(5)); // Default F6 (index 5)
+    let active_hotkey = Arc::new(AtomicU32::new(5)); // Default F6
 
     // 1. Background Thread: Click Loop
     {
@@ -62,14 +61,12 @@ fn main() -> eframe::Result<()> {
 
         thread::spawn(move || loop {
             if running.load(Ordering::Relaxed) {
-                // If in Fixed Location mode, move cursor before clicking
                 if click_mode.load(Ordering::Relaxed) == 1 {
                     let x = target_x.load(Ordering::Relaxed) as f64;
                     let y = target_y.load(Ordering::Relaxed) as f64;
                     let _ = simulate(&EventType::MouseMove { x, y });
                 }
 
-                // Fire click events
                 let _ = simulate(&EventType::ButtonPress(Button::Left));
                 let _ = simulate(&EventType::ButtonRelease(Button::Left));
 
@@ -94,18 +91,19 @@ fn main() -> eframe::Result<()> {
                         if key == target_hk.to_rdev_key() {
                             let state = running.load(Ordering::Relaxed);
                             running.store(!state, Ordering::Relaxed);
+                            println!("[Hotkey] Toggled state to: {}", !state);
                         }
                     }
                 }
             };
 
             if let Err(error) = listen(callback) {
-                eprintln!("Global hook listener error: {:?}", error);
+                eprintln!("[Hotkey Error] Failed to listen to global inputs: {:?}", error);
+                eprintln!("[Hotkey Error] Ensure your user is in the 'input' group: sudo usermod -aG input $USER");
             }
         });
     }
 
-    // Window configuration
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([340.0, 320.0])
@@ -116,7 +114,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "FerroClicker",
         options,
-        Box::new(|_cc| {
+        Box::new(|cc| {
+            // Explicitly force dark theme across all platforms
+            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
             Box::new(AutoClickerApp {
                 is_running,
                 interval_ms,
@@ -146,7 +147,7 @@ impl eframe::App for AutoClickerApp {
             ui.heading("FerroClicker");
             ui.separator();
 
-            // --- 1. Timing Settings ---
+            // Timing Settings
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Timing").strong());
             let mut delay = self.interval_ms.load(Ordering::Relaxed);
@@ -160,7 +161,7 @@ impl eframe::App for AutoClickerApp {
             ui.add_space(8.0);
             ui.separator();
 
-            // --- 2. Location Settings ---
+            // Location Settings
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Click Location").strong());
             
@@ -197,7 +198,7 @@ impl eframe::App for AutoClickerApp {
             ui.add_space(8.0);
             ui.separator();
 
-            // --- 3. Hotkey Configuration ---
+            // Hotkey Configuration
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Toggle Hotkey:").strong());
@@ -218,7 +219,7 @@ impl eframe::App for AutoClickerApp {
 
             ui.add_space(12.0);
 
-            // --- 4. Controls & Status ---
+            // Controls & Status
             let currently_running = self.is_running.load(Ordering::Relaxed);
             let hk_name = Hotkey::ALL()[self.active_hotkey.load(Ordering::Relaxed) as usize].name();
 
