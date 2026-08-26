@@ -1,11 +1,14 @@
 use eframe::egui;
-use enigo::{Button as EnigoButton, Direction, Enigo, Mouse, Settings};
+use enigo::{Button as EnigoButton, Coordinate, Direction, Enigo, Mouse, Settings};
 use evdev::{Device, Key as EvdevKey};
 use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+const MODE_CURRENT_LOCATION: u32 = 0;
+const MODE_FIXED_LOCATION: u32 = 1;
 
 #[derive(PartialEq, Clone, Copy)]
 enum ClickMode {
@@ -53,7 +56,6 @@ impl Hotkey {
     }
 }
 
-/// Helper function to check if the user has permission to read `/dev/input/event*` devices.
 fn check_input_permissions() -> bool {
     let input_dir = match fs::read_dir("/dev/input") {
         Ok(dir) => dir,
@@ -75,7 +77,7 @@ fn check_input_permissions() -> bool {
     }
 
     if !found_event_device {
-        return true; // Assume standard permissions if no event devices are detected.
+        return true;
     }
 
     can_read_device
@@ -84,13 +86,13 @@ fn check_input_permissions() -> bool {
 fn main() -> eframe::Result<()> {
     let is_running = Arc::new(AtomicBool::new(false));
     let interval_ms = Arc::new(AtomicU64::new(100));
-    let mode = Arc::new(AtomicU32::new(0));
+    let mode = Arc::new(AtomicU32::new(MODE_CURRENT_LOCATION));
     let fixed_x = Arc::new(AtomicI32::new(500));
     let fixed_y = Arc::new(AtomicI32::new(500));
-    let active_hotkey = Arc::new(AtomicU32::new(5)); // Default F6
+    let active_hotkey = Arc::new(AtomicU32::new(5));
     let is_picking_location = Arc::new(AtomicBool::new(false));
 
-    // 1. Background Thread: Clicker Engine (Enigo)
+    // Background Thread: Clicker Engine
     {
         let running = Arc::clone(&is_running);
         let interval = Arc::clone(&interval_ms);
@@ -100,7 +102,7 @@ fn main() -> eframe::Result<()> {
 
         thread::spawn(move || {
             let mut enigo = match Enigo::new(&Settings::default()) {
-                Ok(e) => e,
+                Ok(enigo) => enigo,
                 Err(err) => {
                     eprintln!("[Enigo Init Error] Failed to initialize input handle: {:?}", err);
                     return;
@@ -109,14 +111,25 @@ fn main() -> eframe::Result<()> {
 
             loop {
                 if running.load(Ordering::SeqCst) {
-                    if click_mode.load(Ordering::Relaxed) == 1 {
-                        let x = target_x.load(Ordering::Relaxed);
-                        let y = target_y.load(Ordering::Relaxed);
-                        let _ = enigo.move_mouse(x, y, enigo::Coordinate::Abs);
+                    let current_mode = click_mode.load(Ordering::SeqCst);
+
+                    if current_mode == MODE_FIXED_LOCATION {
+                        let x = target_x.load(Ordering::SeqCst);
+                        let y = target_y.load(Ordering::SeqCst);
+
+                        if let Err(err) = enigo.move_mouse(x, y, Coordinate::Abs) {
+                            eprintln!(
+                                "[Enigo Move Error] Could not move mouse to ({}, {}): {:?}",
+                                x, y, err
+                            );
+                        }
                     }
 
-                    let _ = enigo.button(EnigoButton::Left, Direction::Click);
-                    let delay = interval.load(Ordering::Relaxed).max(10);
+                    if let Err(err) = enigo.button(EnigoButton::Left, Direction::Click) {
+                        eprintln!("[Enigo Click Error] Click event failed: {:?}", err);
+                    }
+
+                    let delay = interval.load(Ordering::SeqCst).max(10);
                     thread::sleep(Duration::from_millis(delay));
                 } else {
                     thread::sleep(Duration::from_millis(20));
@@ -125,13 +138,14 @@ fn main() -> eframe::Result<()> {
         });
     }
 
-    // 2. Background Thread: Low-Level Global Listener (evdev)
+    // Background Thread: Low-Level Event Listener
     {
         let running = Arc::clone(&is_running);
         let active_hk = Arc::clone(&active_hotkey);
         let picking = Arc::clone(&is_picking_location);
         let target_x = Arc::clone(&fixed_x);
         let target_y = Arc::clone(&fixed_y);
+        let click_mode = Arc::clone(&mode);
 
         thread::spawn(move || {
             loop {
@@ -154,19 +168,22 @@ fn main() -> eframe::Result<()> {
                 }
 
                 let mut handles = Vec::new();
+
                 for mut dev in valid_devices {
                     let running = Arc::clone(&running);
                     let active_hk = Arc::clone(&active_hk);
                     let picking = Arc::clone(&picking);
                     let target_x = Arc::clone(&target_x);
                     let target_y = Arc::clone(&target_y);
+                    let click_mode = Arc::clone(&click_mode);
 
                     let handle = thread::spawn(move || loop {
                         match dev.fetch_events() {
                             Ok(events) => {
                                 for ev in events {
                                     if ev.event_type() == evdev::EventType::KEY && ev.value() == 1 {
-                                        let current_hk_idx = active_hk.load(Ordering::Relaxed) as usize;
+                                        let current_hk_idx = active_hk.load(Ordering::SeqCst) as usize;
+
                                         if let Some(target_hk) = Hotkey::all().get(current_hk_idx) {
                                             if ev.code() == target_hk.to_evdev_key().code() {
                                                 let state = running.load(Ordering::SeqCst);
@@ -174,30 +191,48 @@ fn main() -> eframe::Result<()> {
                                             }
                                         }
 
-                                        if picking.load(Ordering::Relaxed) && ev.code() == evdev::Key::BTN_LEFT.code() {
-                                            if let Ok(enigo) = Enigo::new(&Settings::default()) {
-                                                if let Ok((x, y)) = enigo.location() {
-                                                    target_x.store(x, Ordering::Relaxed);
-                                                    target_y.store(y, Ordering::Relaxed);
+                                        if picking.load(Ordering::SeqCst) && ev.code() == EvdevKey::BTN_LEFT.code() {
+                                            thread::sleep(Duration::from_millis(50));
+
+                                            if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
+                                                match enigo.location() {
+                                                    Ok((x, y)) => {
+                                                        target_x.store(x, Ordering::SeqCst);
+                                                        target_y.store(y, Ordering::SeqCst);
+                                                        click_mode.store(MODE_FIXED_LOCATION, Ordering::SeqCst);
+
+                                                        println!("[FerroClicker] Location captured: ({}, {})", x, y);
+                                                    }
+                                                    Err(err) => {
+                                                        eprintln!(
+                                                            "[Enigo Location Error] Failed to capture cursor position: {:?}",
+                                                            err
+                                                        );
+                                                    }
                                                 }
+                                            } else {
+                                                eprintln!("[Enigo Init Error] Failed to initialize coordinate picker.");
                                             }
-                                            picking.store(false, Ordering::Relaxed);
+
+                                            picking.store(false, Ordering::SeqCst);
                                         }
                                     }
                                 }
                             }
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                                 thread::sleep(Duration::from_millis(10));
                             }
                             Err(_) => break,
                         }
                     });
+
                     handles.push(handle);
                 }
 
                 for handle in handles {
                     let _ = handle.join();
                 }
+
                 thread::sleep(Duration::from_secs(1));
             }
         });
@@ -252,7 +287,6 @@ impl eframe::App for AutoClickerApp {
             ui.heading("FerroClicker");
             ui.separator();
 
-            // --- Permission Check Banner ---
             if !self.has_input_permissions {
                 egui::Frame::group(ui.style())
                     .fill(egui::Color32::from_rgb(60, 20, 20))
@@ -265,9 +299,11 @@ impl eframe::App for AutoClickerApp {
                                     .color(egui::Color32::RED),
                             );
                             ui.label(
-                                egui::RichText::new("Global hotkeys won't respond. Run:\nsudo usermod -aG input $USER")
-                                    .small()
-                                    .color(egui::Color32::LIGHT_GRAY),
+                                egui::RichText::new(
+                                    "Global hotkeys won't respond. Run:\nsudo usermod -aG input $USER",
+                                )
+                                .small()
+                                .color(egui::Color32::LIGHT_GRAY),
                             );
                             ui.add_space(4.0);
                             if ui.button("🔄 Re-check Permissions").clicked() {
@@ -279,54 +315,60 @@ impl eframe::App for AutoClickerApp {
                 ui.separator();
             }
 
-            // --- 1. Timing Settings ---
             ui.add_space(4.0);
+
             ui.label(egui::RichText::new("Timing").strong());
-            let mut delay = self.interval_ms.load(Ordering::Relaxed);
+            let mut delay = self.interval_ms.load(Ordering::SeqCst);
             ui.horizontal(|ui| {
                 ui.label("Interval:");
                 if ui.add(egui::Slider::new(&mut delay, 1..=1000).suffix(" ms")).changed() {
-                    self.interval_ms.store(delay, Ordering::Relaxed);
+                    self.interval_ms.store(delay, Ordering::SeqCst);
                 }
             });
 
             ui.add_space(8.0);
             ui.separator();
-
-            // --- 2. Location Settings ---
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Click Location").strong());
 
-            let current_mode_val = self.mode.load(Ordering::Relaxed);
-            let mut selected_mode = if current_mode_val == 0 {
+            ui.label(egui::RichText::new("Click Location").strong());
+            let current_mode_val = self.mode.load(Ordering::SeqCst);
+            let mut selected_mode = if current_mode_val == MODE_CURRENT_LOCATION {
                 ClickMode::CurrentLocation
             } else {
                 ClickMode::FixedLocation
             };
 
-            ui.radio_value(&mut selected_mode, ClickMode::CurrentLocation, "Current Cursor Location");
-            ui.radio_value(&mut selected_mode, ClickMode::FixedLocation, "Fixed Coordinates");
+            let r1 = ui.radio_value(&mut selected_mode, ClickMode::CurrentLocation, "Current Cursor Location");
+            let r2 = ui.radio_value(&mut selected_mode, ClickMode::FixedLocation, "Fixed Coordinates");
+
+            if r1.changed() || r2.changed() {
+                let new_mode_val = match selected_mode {
+                    ClickMode::CurrentLocation => MODE_CURRENT_LOCATION,
+                    ClickMode::FixedLocation => MODE_FIXED_LOCATION,
+                };
+                self.mode.store(new_mode_val, Ordering::SeqCst);
+            }
 
             if selected_mode == ClickMode::FixedLocation {
                 ui.indent("coords_indent", |ui| {
                     ui.horizontal(|ui| {
-                        let mut x = self.fixed_x.load(Ordering::Relaxed);
-                        let mut y = self.fixed_y.load(Ordering::Relaxed);
+                        let mut x = self.fixed_x.load(Ordering::SeqCst);
+                        let mut y = self.fixed_y.load(Ordering::SeqCst);
 
                         ui.label("X:");
                         if ui.add(egui::DragValue::new(&mut x).clamp_range(0..=7680)).changed() {
-                            self.fixed_x.store(x, Ordering::Relaxed);
+                            self.fixed_x.store(x, Ordering::SeqCst);
                         }
 
                         ui.label("Y:");
                         if ui.add(egui::DragValue::new(&mut y).clamp_range(0..=4320)).changed() {
-                            self.fixed_y.store(y, Ordering::Relaxed);
+                            self.fixed_y.store(y, Ordering::SeqCst);
                         }
                     });
 
                     ui.add_space(4.0);
 
-                    let picking = self.is_picking_location.load(Ordering::Relaxed);
+                    let picking = self.is_picking_location.load(Ordering::SeqCst);
                     let picker_btn_text = if picking {
                         "Click anywhere to capture..."
                     } else {
@@ -340,21 +382,19 @@ impl eframe::App for AutoClickerApp {
                     );
 
                     if ui.add(btn).clicked() {
-                        self.is_picking_location.store(!picking, Ordering::Relaxed);
+                        self.is_picking_location.store(!picking, Ordering::SeqCst);
                     }
                 });
             }
-            self.mode.store(selected_mode as u32, Ordering::Relaxed);
 
             ui.add_space(8.0);
             ui.separator();
-
-            // --- 3. Hotkey Configuration ---
             ui.add_space(4.0);
+
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Toggle Hotkey:").strong());
 
-                let mut hk_idx = self.active_hotkey.load(Ordering::Relaxed) as usize;
+                let mut hk_idx = self.active_hotkey.load(Ordering::SeqCst) as usize;
                 let current_hk = Hotkey::all()[hk_idx];
 
                 egui::ComboBox::from_id_source("hotkey_select")
@@ -362,7 +402,7 @@ impl eframe::App for AutoClickerApp {
                     .show_ui(ui, |ui| {
                         for (i, hk) in Hotkey::all().iter().enumerate() {
                             if ui.selectable_value(&mut hk_idx, i, hk.name()).clicked() {
-                                self.active_hotkey.store(i as u32, Ordering::Relaxed);
+                                self.active_hotkey.store(i as u32, Ordering::SeqCst);
                             }
                         }
                     });
@@ -370,9 +410,9 @@ impl eframe::App for AutoClickerApp {
 
             ui.add_space(12.0);
 
-            // --- 4. Controls & Status ---
-            let currently_running = self.is_running.load(Ordering::Relaxed);
-            let hk_name = Hotkey::all()[self.active_hotkey.load(Ordering::Relaxed) as usize].name();
+            let currently_running = self.is_running.load(Ordering::SeqCst);
+            let hk_index = self.active_hotkey.load(Ordering::SeqCst) as usize;
+            let hk_name = Hotkey::all()[hk_index].name();
 
             let button_color = if currently_running {
                 egui::Color32::from_rgb(180, 40, 40)
@@ -387,14 +427,17 @@ impl eframe::App for AutoClickerApp {
             };
 
             ui.vertical_centered(|ui| {
-                if ui.add_sized(
-                    [180.0, 32.0],
-                    egui::Button::new(
-                        egui::RichText::new(button_text).color(egui::Color32::WHITE).strong(),
+                if ui
+                    .add_sized(
+                        [180.0, 32.0],
+                        egui::Button::new(
+                            egui::RichText::new(button_text)
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(button_color),
                     )
-                    .fill(button_color),
-                )
-                .clicked()
+                    .clicked()
                 {
                     self.is_running.store(!currently_running, Ordering::SeqCst);
                 }
