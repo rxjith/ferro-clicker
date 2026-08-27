@@ -35,7 +35,15 @@
 
 ## 🎬 Demo
 
-![FerroClicker Demo](media-assets/FerroClicker.gif)
+<div align="center">
+
+  <img
+    src="media-assets/FerroClicker.gif"
+    alt="FerroClicker Demo"
+    width="700"
+  />
+
+</div>
 
 ---
 
