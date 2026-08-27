@@ -38,7 +38,7 @@
 <div align="center">
 
   <img
-    src="media-assets/FerroClicker.gif"
+    src="media-assets/FerroClickerDemo.gif"
     alt="FerroClicker Demo"
     width="700"
   />
