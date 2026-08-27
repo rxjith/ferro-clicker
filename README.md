@@ -1,8 +1,18 @@
-# FerroClicker 🦀
+<p align="center">
+  <img src="media-assets/ferro-clicker%20icon%20-%20final%20128x128.png"
+       alt="FerroClicker Icon"
+       width="128">
+</p>
 
-A lightweight, fast auto-clicker built with Rust.
+<h1 align="center">FerroClicker 🦀</h1>
 
-FerroClicker provides a simple GUI for automated mouse clicking, configurable delays, and global hotkey control.
+<p align="center">
+  A lightweight, fast auto-clicker built with Rust.
+</p>
+
+<p align="center">
+  FerroClicker provides a simple GUI for automated mouse clicking, configurable delays, and global hotkey control.
+</p>
 
 ---
 
@@ -20,6 +30,12 @@ FerroClicker provides a simple GUI for automated mouse clicking, configurable de
 - 📦 Portable AppImage
 - 🐧 Linux support
 - 🔓 Open source
+
+---
+
+## 🎬 Demo
+
+![FerroClicker Demo](media-assets/FerroClicker.gif)
 
 ---
 
