@@ -1,20 +1,11 @@
 use eframe::egui;
-use enigo::{Button as EnigoButton, Coordinate, Direction, Enigo, Mouse, Settings};
+use enigo::{Button as EnigoButton, Direction, Enigo, Mouse, Settings};
 use evdev::{Device, Key as EvdevKey};
 use std::fs;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
-
-const MODE_CURRENT_LOCATION: u32 = 0;
-const MODE_FIXED_LOCATION: u32 = 1;
-
-#[derive(PartialEq, Clone, Copy)]
-enum ClickMode {
-    CurrentLocation,
-    FixedLocation,
-}
+use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Hotkey {
@@ -86,19 +77,16 @@ fn check_input_permissions() -> bool {
 fn main() -> eframe::Result<()> {
     let is_running = Arc::new(AtomicBool::new(false));
     let interval_ms = Arc::new(AtomicU64::new(100));
-    let mode = Arc::new(AtomicU32::new(MODE_CURRENT_LOCATION));
-    let fixed_x = Arc::new(AtomicI32::new(500));
-    let fixed_y = Arc::new(AtomicI32::new(500));
+    let startup_delay_sec = Arc::new(AtomicU64::new(3)); // Default 3 sec delay
+    let countdown_remaining = Arc::new(AtomicU64::new(0));
     let active_hotkey = Arc::new(AtomicU32::new(5));
-    let is_picking_location = Arc::new(AtomicBool::new(false));
 
-    // Background Thread: Clicker Engine
+    // Background Thread: Clicker Engine with Delay Handler
     {
         let running = Arc::clone(&is_running);
         let interval = Arc::clone(&interval_ms);
-        let click_mode = Arc::clone(&mode);
-        let target_x = Arc::clone(&fixed_x);
-        let target_y = Arc::clone(&fixed_y);
+        let start_delay = Arc::clone(&startup_delay_sec);
+        let countdown = Arc::clone(&countdown_remaining);
 
         thread::spawn(move || {
             let mut enigo = match Enigo::new(&Settings::default()) {
@@ -109,22 +97,43 @@ fn main() -> eframe::Result<()> {
                 }
             };
 
+            let mut was_running = false;
+
             loop {
-                if running.load(Ordering::SeqCst) {
-                    let current_mode = click_mode.load(Ordering::SeqCst);
+                let currently_running = running.load(Ordering::SeqCst);
 
-                    if current_mode == MODE_FIXED_LOCATION {
-                        let x = target_x.load(Ordering::SeqCst);
-                        let y = target_y.load(Ordering::SeqCst);
+                // Detect transition from STOPPED -> RUNNING
+                if currently_running && !was_running {
+                    let delay_secs = start_delay.load(Ordering::SeqCst);
 
-                        if let Err(err) = enigo.move_mouse(x, y, Coordinate::Abs) {
-                            eprintln!(
-                                "[Enigo Move Error] Could not move mouse to ({}, {}): {:?}",
-                                x, y, err
-                            );
+                    if delay_secs > 0 {
+                        let start_time = Instant::now();
+                        let total_duration = Duration::from_secs(delay_secs);
+
+                        while start_time.elapsed() < total_duration {
+                            // If user toggled it OFF during countdown, abort!
+                            if !running.load(Ordering::SeqCst) {
+                                countdown.store(0, Ordering::SeqCst);
+                                break;
+                            }
+
+                            let remaining = total_duration
+                                .checked_sub(start_time.elapsed())
+                                .unwrap_or(Duration::ZERO);
+
+                            // Ceiling division so it shows "3... 2... 1..." instead of starting at "2"
+                            let remaining_secs = remaining.as_secs_f64().ceil() as u64;
+                            countdown.store(remaining_secs, Ordering::SeqCst);
+
+                            thread::sleep(Duration::from_millis(50));
                         }
                     }
+                    countdown.store(0, Ordering::SeqCst);
+                }
 
+                was_running = running.load(Ordering::SeqCst);
+
+                if was_running {
                     if let Err(err) = enigo.button(EnigoButton::Left, Direction::Click) {
                         eprintln!("[Enigo Click Error] Click event failed: {:?}", err);
                     }
@@ -142,10 +151,6 @@ fn main() -> eframe::Result<()> {
     {
         let running = Arc::clone(&is_running);
         let active_hk = Arc::clone(&active_hotkey);
-        let picking = Arc::clone(&is_picking_location);
-        let target_x = Arc::clone(&fixed_x);
-        let target_y = Arc::clone(&fixed_y);
-        let click_mode = Arc::clone(&mode);
 
         thread::spawn(move || {
             loop {
@@ -172,10 +177,6 @@ fn main() -> eframe::Result<()> {
                 for mut dev in valid_devices {
                     let running = Arc::clone(&running);
                     let active_hk = Arc::clone(&active_hk);
-                    let picking = Arc::clone(&picking);
-                    let target_x = Arc::clone(&target_x);
-                    let target_y = Arc::clone(&target_y);
-                    let click_mode = Arc::clone(&click_mode);
 
                     let handle = thread::spawn(move || loop {
                         match dev.fetch_events() {
@@ -189,32 +190,6 @@ fn main() -> eframe::Result<()> {
                                                 let state = running.load(Ordering::SeqCst);
                                                 running.store(!state, Ordering::SeqCst);
                                             }
-                                        }
-
-                                        if picking.load(Ordering::SeqCst) && ev.code() == EvdevKey::BTN_LEFT.code() {
-                                            thread::sleep(Duration::from_millis(50));
-
-                                            if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
-                                                match enigo.location() {
-                                                    Ok((x, y)) => {
-                                                        target_x.store(x, Ordering::SeqCst);
-                                                        target_y.store(y, Ordering::SeqCst);
-                                                        click_mode.store(MODE_FIXED_LOCATION, Ordering::SeqCst);
-
-                                                        println!("[FerroClicker] Location captured: ({}, {})", x, y);
-                                                    }
-                                                    Err(err) => {
-                                                        eprintln!(
-                                                            "[Enigo Location Error] Failed to capture cursor position: {:?}",
-                                                            err
-                                                        );
-                                                    }
-                                                }
-                                            } else {
-                                                eprintln!("[Enigo Init Error] Failed to initialize coordinate picker.");
-                                            }
-
-                                            picking.store(false, Ordering::SeqCst);
                                         }
                                     }
                                 }
@@ -242,7 +217,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([340.0, 420.0])
+            .with_inner_size([300.0, 310.0])
             .with_resizable(false),
         ..Default::default()
     };
@@ -256,11 +231,9 @@ fn main() -> eframe::Result<()> {
             Box::new(AutoClickerApp {
                 is_running,
                 interval_ms,
-                mode,
-                fixed_x,
-                fixed_y,
+                startup_delay_sec,
+                countdown_remaining,
                 active_hotkey,
-                is_picking_location,
                 has_input_permissions: initial_permissions,
             })
         }),
@@ -270,11 +243,9 @@ fn main() -> eframe::Result<()> {
 struct AutoClickerApp {
     is_running: Arc<AtomicBool>,
     interval_ms: Arc<AtomicU64>,
-    mode: Arc<AtomicU32>,
-    fixed_x: Arc<AtomicI32>,
-    fixed_y: Arc<AtomicI32>,
+    startup_delay_sec: Arc<AtomicU64>,
+    countdown_remaining: Arc<AtomicU64>,
     active_hotkey: Arc<AtomicU32>,
-    is_picking_location: Arc<AtomicBool>,
     has_input_permissions: bool,
 }
 
@@ -318,6 +289,8 @@ impl eframe::App for AutoClickerApp {
             ui.add_space(4.0);
 
             ui.label(egui::RichText::new("Timing").strong());
+
+            // Click Interval Slider
             let mut delay = self.interval_ms.load(Ordering::SeqCst);
             ui.horizontal(|ui| {
                 ui.label("Interval:");
@@ -326,66 +299,14 @@ impl eframe::App for AutoClickerApp {
                 }
             });
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-
-            ui.label(egui::RichText::new("Click Location").strong());
-            let current_mode_val = self.mode.load(Ordering::SeqCst);
-            let mut selected_mode = if current_mode_val == MODE_CURRENT_LOCATION {
-                ClickMode::CurrentLocation
-            } else {
-                ClickMode::FixedLocation
-            };
-
-            let r1 = ui.radio_value(&mut selected_mode, ClickMode::CurrentLocation, "Current Cursor Location");
-            let r2 = ui.radio_value(&mut selected_mode, ClickMode::FixedLocation, "Fixed Coordinates");
-
-            if r1.changed() || r2.changed() {
-                let new_mode_val = match selected_mode {
-                    ClickMode::CurrentLocation => MODE_CURRENT_LOCATION,
-                    ClickMode::FixedLocation => MODE_FIXED_LOCATION,
-                };
-                self.mode.store(new_mode_val, Ordering::SeqCst);
-            }
-
-            if selected_mode == ClickMode::FixedLocation {
-                ui.indent("coords_indent", |ui| {
-                    ui.horizontal(|ui| {
-                        let mut x = self.fixed_x.load(Ordering::SeqCst);
-                        let mut y = self.fixed_y.load(Ordering::SeqCst);
-
-                        ui.label("X:");
-                        if ui.add(egui::DragValue::new(&mut x).clamp_range(0..=7680)).changed() {
-                            self.fixed_x.store(x, Ordering::SeqCst);
-                        }
-
-                        ui.label("Y:");
-                        if ui.add(egui::DragValue::new(&mut y).clamp_range(0..=4320)).changed() {
-                            self.fixed_y.store(y, Ordering::SeqCst);
-                        }
-                    });
-
-                    ui.add_space(4.0);
-
-                    let picking = self.is_picking_location.load(Ordering::SeqCst);
-                    let picker_btn_text = if picking {
-                        "Click anywhere to capture..."
-                    } else {
-                        "📍 Pick Location with Mouse"
-                    };
-
-                    let btn = egui::Button::new(
-                        egui::RichText::new(picker_btn_text)
-                            .small()
-                            .color(if picking { egui::Color32::YELLOW } else { egui::Color32::WHITE }),
-                    );
-
-                    if ui.add(btn).clicked() {
-                        self.is_picking_location.store(!picking, Ordering::SeqCst);
-                    }
-                });
-            }
+            // Start Delay Slider
+            let mut start_delay = self.startup_delay_sec.load(Ordering::SeqCst);
+            ui.horizontal(|ui| {
+                ui.label("Start Delay:");
+                if ui.add(egui::Slider::new(&mut start_delay, 0..=10).suffix("s")).changed() {
+                    self.startup_delay_sec.store(start_delay, Ordering::SeqCst);
+                }
+            });
 
             ui.add_space(8.0);
             ui.separator();
@@ -411,19 +332,30 @@ impl eframe::App for AutoClickerApp {
             ui.add_space(12.0);
 
             let currently_running = self.is_running.load(Ordering::SeqCst);
+            let remaining_cd = self.countdown_remaining.load(Ordering::SeqCst);
             let hk_index = self.active_hotkey.load(Ordering::SeqCst) as usize;
             let hk_name = Hotkey::all()[hk_index].name();
 
-            let button_color = if currently_running {
-                egui::Color32::from_rgb(180, 40, 40)
+            let (button_color, button_text, status_text) = if currently_running {
+                if remaining_cd > 0 {
+                    (
+                        egui::Color32::from_rgb(200, 120, 20),
+                        format!("CANCEL ({})", hk_name),
+                        format!("STARTING IN {}s...", remaining_cd),
+                    )
+                } else {
+                    (
+                        egui::Color32::from_rgb(180, 40, 40),
+                        format!("STOP ({})", hk_name),
+                        "ACTIVE".to_string(),
+                    )
+                }
             } else {
-                egui::Color32::from_rgb(40, 140, 40)
-            };
-
-            let button_text = if currently_running {
-                format!("STOP ({})", hk_name)
-            } else {
-                format!("START ({})", hk_name)
+                (
+                    egui::Color32::from_rgb(40, 140, 40),
+                    format!("START ({})", hk_name),
+                    "PAUSED".to_string(),
+                )
             };
 
             ui.vertical_centered(|ui| {
@@ -443,10 +375,7 @@ impl eframe::App for AutoClickerApp {
                 }
 
                 ui.add_space(6.0);
-                ui.label(format!(
-                    "Status: {}",
-                    if currently_running { "ACTIVE" } else { "PAUSED" }
-                ));
+                ui.label(format!("Status: {}", status_text));
             });
         });
     }
