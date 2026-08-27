@@ -40,7 +40,7 @@
   <img
     src="media-assets/FerroClickerDemo.gif"
     alt="FerroClicker Demo"
-    width="700"
+    height="1920" width="1080"
   />
 
 </div>
